@@ -1,7 +1,18 @@
 import {runAppleScript} from 'run-applescript';
 import { promisify } from 'node:util';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
+import { 
+  validatePhoneNumber, 
+  validateMessageContent,
+  AppleScriptBuilder,
+  escapeAppleScriptString,
+  escapeSqlString,
+  rateLimiters,
+  auditLogger,
+  securityConfig
+} from './security.js';
+import { executeSqliteQuery, buildSafeInClause, sanitizeLimit } from './database.js';
 
 const execAsync = promisify(exec);
 
@@ -27,8 +38,9 @@ async function retryOperation<T>(operation: () => Promise<T>, retries = MAX_RETR
 }
 
 function normalizePhoneNumber(phone: string): string[] {
-    // Remove all non-numeric characters except +
-    const cleaned = phone.replace(/[^0-9+]/g, '');
+    // Validate phone number first
+    const validatedPhone = validatePhoneNumber(phone);
+    const cleaned = validatedPhone;
     
     // If it's already in the correct format (+1XXXXXXXXXX), return just that
     if (/^\+1\d{10}$/.test(cleaned)) {
@@ -60,14 +72,51 @@ function normalizePhoneNumber(phone: string): string[] {
 }
 
 async function sendMessage(phoneNumber: string, message: string) {
-    const escapedMessage = message.replace(/"/g, '\\"');
-    const result = await runAppleScript(`
-tell application "Messages"
-    set targetService to 1st service whose service type = iMessage
-    set targetBuddy to buddy "${phoneNumber}"
-    send "${escapedMessage}" to targetBuddy
-end tell`);
-    return result;
+    // Validate inputs
+    const validatedPhone = validatePhoneNumber(phoneNumber);
+    const validatedMessage = validateMessageContent(message);
+    
+    // Check rate limits
+    if (securityConfig.enableRateLimiting) {
+        if (!rateLimiters.messages.check('global') || !rateLimiters.global.check('global')) {
+            throw new Error('Rate limit exceeded. Please try again later.');
+        }
+    }
+    
+    // Build AppleScript safely
+    const script = new AppleScriptBuilder()
+        .tell('Messages')
+        .raw('set targetService to 1st service whose service type = iMessage')
+        .raw(`set targetBuddy to buddy "${escapeAppleScriptString(validatedPhone)}"`)
+        .raw(`send "${escapeAppleScriptString(validatedMessage)}" to targetBuddy`)
+        .endTell()
+        .build();
+    
+    try {
+        const result = await runAppleScript(script);
+        
+        // Audit log success
+        if (securityConfig.enableAuditLogging) {
+            auditLogger.log({
+                operation: 'sendMessage',
+                details: { phoneNumber: validatedPhone, messageLength: validatedMessage.length },
+                success: true
+            });
+        }
+        
+        return result;
+    } catch (error) {
+        // Audit log failure
+        if (securityConfig.enableAuditLogging) {
+            auditLogger.log({
+                operation: 'sendMessage',
+                details: { phoneNumber: validatedPhone },
+                success: false,
+                error: error instanceof Error ? error.message : String(error)
+            });
+        }
+        throw error;
+    }
 }
 
 interface Message {
@@ -193,10 +242,14 @@ async function getAttachmentPaths(messageId: number): Promise<string[]> {
             FROM attachment
             INNER JOIN message_attachment_join 
             ON attachment.ROWID = message_attachment_join.attachment_id
-            WHERE message_attachment_join.message_id = ${messageId}
+            WHERE message_attachment_join.message_id = ?
         `;
         
-        const { stdout } = await execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`);
+        const { stdout } = await executeSqliteQuery(
+            `${process.env.HOME}/Library/Messages/chat.db`,
+            query,
+            [messageId]
+        );
         
         if (!stdout.trim()) {
             return [];
@@ -222,8 +275,16 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
         const phoneFormats = normalizePhoneNumber(phoneNumber);
         console.error("Trying phone formats:", phoneFormats);
         
+        // Check rate limits
+        if (securityConfig.enableRateLimiting) {
+            if (!rateLimiters.search.check('global') || !rateLimiters.global.check('global')) {
+                throw new Error('Rate limit exceeded. Please try again later.');
+            }
+        }
+        
         // Create SQL IN clause with all phone number formats
-        const phoneList = phoneFormats.map(p => `'${p.replace(/'/g, "''")}'`).join(',');
+        const { clause: phoneInClause, params: phoneParams } = buildSafeInClause(phoneFormats);
+        const safeLimit = sanitizeLimit(limit, securityConfig.maxSearchResults);
         
         const query = `
             SELECT 
@@ -246,18 +307,22 @@ async function readMessages(phoneNumber: string, limit = 10): Promise<Message[]>
                 END as content_type
             FROM message m 
             INNER JOIN handle h ON h.ROWID = m.handle_id 
-            WHERE h.id IN (${phoneList})
+            WHERE h.id IN ${phoneInClause}
                 AND (m.text IS NOT NULL OR m.attributedBody IS NOT NULL OR m.cache_has_attachments = 1)
                 AND m.is_from_me IS NOT NULL  -- Ensure it's a real message
                 AND m.item_type = 0  -- Regular messages only
                 AND m.is_audio_message = 0  -- Skip audio messages
             ORDER BY m.date DESC 
-            LIMIT ${limit}
+            LIMIT ?
         `;
 
         // Execute query with retries
         const { stdout } = await retryOperation(() => 
-            execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
+            executeSqliteQuery(
+                `${process.env.HOME}/Library/Messages/chat.db`,
+                query,
+                [...phoneParams, safeLimit]
+            )
         );
         
         if (!stdout.trim()) {
@@ -348,6 +413,15 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
             return [];
         }
 
+        // Check rate limits
+        if (securityConfig.enableRateLimiting) {
+            if (!rateLimiters.search.check('global') || !rateLimiters.global.check('global')) {
+                throw new Error('Rate limit exceeded. Please try again later.');
+            }
+        }
+
+        const safeLimit = sanitizeLimit(limit, securityConfig.maxSearchResults);
+
         const query = `
             SELECT 
                 m.ROWID as message_id,
@@ -375,12 +449,16 @@ async function getUnreadMessages(limit = 10): Promise<Message[]> {
                 AND m.is_audio_message = 0  -- Skip audio messages
                 AND m.item_type = 0  -- Regular messages only
             ORDER BY m.date DESC 
-            LIMIT ${limit}
+            LIMIT ?
         `;
 
         // Execute query with retries
         const { stdout } = await retryOperation(() => 
-            execAsync(`sqlite3 -json "${process.env.HOME}/Library/Messages/chat.db" "${query}"`)
+            executeSqliteQuery(
+                `${process.env.HOME}/Library/Messages/chat.db`,
+                query,
+                [safeLimit]
+            )
         );
         
         if (!stdout.trim()) {

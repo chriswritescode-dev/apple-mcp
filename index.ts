@@ -7,6 +7,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { runAppleScript } from "run-applescript";
 import tools from "./tools";
+import { checkAuthentication, securityConfig, auditLogger } from "./utils/security.js";
 
 interface WebSearchArgs {
   query: string;
@@ -196,6 +197,29 @@ function initServer() {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
+      // Check authentication if enabled
+      if (securityConfig.authToken) {
+        const authHeader = (request as any).headers?.authorization;
+        const token = authHeader?.replace('Bearer ', '');
+        
+        if (!checkAuthentication(token)) {
+          auditLogger.log({
+            operation: 'auth_failure',
+            details: { tool: request.params.name },
+            success: false,
+            error: 'Invalid or missing authentication token'
+          });
+          
+          return {
+            content: [{
+              type: "text",
+              text: "Authentication required. Please provide a valid auth token."
+            }],
+            isError: true
+          };
+        }
+      }
+      
       const { name, arguments: args } = request.params;
 
       if (!args) {

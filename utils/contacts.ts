@@ -1,5 +1,12 @@
 import { run } from '@jxa/run';
 import { runAppleScript } from 'run-applescript';
+import {
+  validateSearchQuery,
+  validatePhoneNumber,
+  rateLimiters,
+  auditLogger,
+  securityConfig
+} from './security.js';
 
 async function checkContactsAccess(): Promise<boolean> {
     try {
@@ -50,6 +57,16 @@ async function getAllNumbers() {
 
 async function findNumber(name: string) {
     try {
+        // Validate input
+        const validatedName = validateSearchQuery(name);
+        
+        // Check rate limits
+        if (securityConfig.enableRateLimiting) {
+            if (!rateLimiters.search.check('global') || !rateLimiters.global.check('global')) {
+                throw new Error('Rate limit exceeded. Please try again later.');
+            }
+        }
+        
         if (!await checkContactsAccess()) {
             return [];
         }
@@ -59,13 +76,13 @@ async function findNumber(name: string) {
             const people = Contacts.people.whose({name: {_contains: name}});
             const phones = people.length > 0 ? people[0].phones() : [];
             return phones.map((phone: unknown) => (phone as { value: string }).value);
-        }, name);
+        }, validatedName);
 
         // If no numbers found, run getNumbers() to find the closest match
         if (nums.length === 0) {
             const allNumbers = await getAllNumbers();
             const closestMatch = Object.keys(allNumbers).find(personName => 
-                personName.toLowerCase().includes(name.toLowerCase())
+                personName.toLowerCase().includes(validatedName.toLowerCase())
             );
             return closestMatch ? allNumbers[closestMatch] : [];
         }
@@ -78,12 +95,15 @@ async function findNumber(name: string) {
 
 async function findContactByPhone(phoneNumber: string): Promise<string | null> {
     try {
+        // Validate phone number
+        const validatedPhone = validatePhoneNumber(phoneNumber);
+        
         if (!await checkContactsAccess()) {
             return null;
         }
 
         // Normalize the phone number for comparison
-        const searchNumber = phoneNumber.replace(/[^0-9+]/g, '');
+        const searchNumber = validatedPhone;
         
         // Get all contacts and their numbers
         const allContacts = await getAllNumbers();

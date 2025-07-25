@@ -1,5 +1,16 @@
 import { run } from "@jxa/run";
 import { runAppleScript } from "run-applescript";
+import {
+  validateEmail,
+  validateSearchQuery,
+  validateMessageContent,
+  AppleScriptBuilder,
+  escapeAppleScriptString,
+  rateLimiters,
+  auditLogger,
+  securityConfig,
+  sanitizeLimit
+} from './security.js';
 
 async function checkMailAccess(): Promise<boolean> {
   try {
@@ -308,6 +319,17 @@ async function searchMails(
   limit = 10,
 ): Promise<EmailMessage[]> {
   try {
+    // Validate inputs
+    const validatedSearchTerm = validateSearchQuery(searchTerm);
+    const safeLimit = sanitizeLimit(limit, securityConfig.maxSearchResults);
+    
+    // Check rate limits
+    if (securityConfig.enableRateLimiting) {
+      if (!rateLimiters.search.check('global') || !rateLimiters.global.check('global')) {
+        throw new Error('Rate limit exceeded. Please try again later.');
+      }
+    }
+    
     if (!(await checkMailAccess())) {
       return [];
     }
@@ -323,7 +345,7 @@ end if`);
     try {
       const script = `
 tell application "Mail"
-    set searchString to "${searchTerm.replace(/"/g, '\\"')}"
+    set searchString to "${escapeAppleScriptString(validatedSearchTerm)}"
     set foundMsgs to {}
     set allBoxes to every mailbox
 
@@ -331,13 +353,13 @@ tell application "Mail"
         try
             set boxMsgs to (messages of currentBox whose (subject contains searchString) or (content contains searchString))
             set foundMsgs to foundMsgs & boxMsgs
-            if (count of foundMsgs) ≥ ${limit} then exit repeat
+            if (count of foundMsgs) ≥ ${safeLimit} then exit repeat
         end try
     end repeat
 
     set resultList to {}
     set msgCount to (count of foundMsgs)
-    if msgCount > ${limit} then set msgCount to ${limit}
+    if msgCount > ${safeLimit} then set msgCount to ${safeLimit}
 
     repeat with i from 1 to msgCount
         try
@@ -427,8 +449,8 @@ end tell`;
 
         return results.slice(0, limit);
       },
-      searchTerm,
-      limit,
+      validatedSearchTerm,
+      safeLimit,
     );
 
     return searchResults;
@@ -448,6 +470,20 @@ async function sendMail(
   bcc?: string,
 ): Promise<string | undefined> {
   try {
+    // Validate inputs
+    const validatedTo = validateEmail(to);
+    const validatedSubject = validateMessageContent(subject);
+    const validatedBody = validateMessageContent(body);
+    const validatedCc = cc ? validateEmail(cc) : undefined;
+    const validatedBcc = bcc ? validateEmail(bcc) : undefined;
+    
+    // Check rate limits
+    if (securityConfig.enableRateLimiting) {
+      if (!rateLimiters.emails.check('global') || !rateLimiters.global.check('global')) {
+        throw new Error('Rate limit exceeded. Please try again later.');
+      }
+    }
+    
     if (!(await checkMailAccess())) {
       throw new Error("Could not access Mail app");
     }
@@ -459,38 +495,52 @@ if application "Mail" is not running then
     delay 2
 end if`);
 
-    // Escape special characters in strings for AppleScript
-    const escapedTo = to.replace(/"/g, '\\"');
-    const escapedSubject = subject.replace(/"/g, '\\"');
-    const escapedBody = body.replace(/"/g, '\\"');
-    const escapedCc = cc ? cc.replace(/"/g, '\\"') : "";
-    const escapedBcc = bcc ? bcc.replace(/"/g, '\\"') : "";
+    // Use proper escaping
+    const escapedTo = escapeAppleScriptString(validatedTo);
+    const escapedSubject = escapeAppleScriptString(validatedSubject);
+    const escapedBody = escapeAppleScriptString(validatedBody);
+    const escapedCc = validatedCc ? escapeAppleScriptString(validatedCc) : "";
+    const escapedBcc = validatedBcc ? escapeAppleScriptString(validatedBcc) : "";
 
-    let script = `
-tell application "Mail"
-    set newMessage to make new outgoing message with properties {subject:"${escapedSubject}", content:"${escapedBody}", visible:true}
-    tell newMessage
-        make new to recipient with properties {address:"${escapedTo}"}
-`;
-
-    if (cc) {
-      script += `        make new cc recipient with properties {address:"${escapedCc}"}\n`;
+    // Build AppleScript safely
+    const scriptBuilder = new AppleScriptBuilder()
+      .tell('Mail')
+      .raw(`set newMessage to make new outgoing message with properties {subject:"${escapedSubject}", content:"${escapedBody}", visible:true}`)
+      .raw('tell newMessage')
+      .raw(`make new to recipient with properties {address:"${escapedTo}"}`)
+    
+    if (validatedCc) {
+      scriptBuilder.raw(`make new cc recipient with properties {address:"${escapedCc}"}`);
     }
 
-    if (bcc) {
-      script += `        make new bcc recipient with properties {address:"${escapedBcc}"}\n`;
+    if (validatedBcc) {
+      scriptBuilder.raw(`make new bcc recipient with properties {address:"${escapedBcc}"}`);
     }
 
-    script += `    end tell
-    send newMessage
-    return "success"
-end tell
-`;
+    const script = scriptBuilder
+      .raw('end tell')
+      .raw('send newMessage')
+      .raw('return "success"')
+      .endTell()
+      .build();
 
     try {
       const result = await runAppleScript(script);
       if (result === "success") {
-        return `Email sent to ${to} with subject "${subject}"`;
+        // Audit log success
+        if (securityConfig.enableAuditLogging) {
+          auditLogger.log({
+            operation: 'sendMail',
+            details: { 
+              to: validatedTo, 
+              subject: validatedSubject.substring(0, 50),
+              cc: validatedCc,
+              bcc: validatedBcc
+            },
+            success: true
+          });
+        }
+        return `Email sent to ${validatedTo} with subject "${validatedSubject}"`;
       // biome-ignore lint/style/noUselessElse: <explanation>
       } else {
       }

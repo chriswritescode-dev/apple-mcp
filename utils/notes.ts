@@ -126,7 +126,20 @@ async function createNote(title: string, body: string, folderName: string = 'Cla
             } catch (scriptError) {
                 throw new Error(`AppleScript error: ${scriptError.message || String(scriptError)}`);
             }
-        }, title, formattedBody, folderName);
+        }, validatedTitle, formattedBody, validatedFolderName);
+        
+        // Audit log success
+        if (securityConfig.enableAuditLogging && result.success) {
+            auditLogger.log({
+                operation: 'createNote',
+                details: { 
+                    title: validatedTitle.substring(0, 50),
+                    folderName: validatedFolderName,
+                    bodyLength: formattedBody.length
+                },
+                success: true
+            });
+        }
         
         return result;
     } catch (error) {
