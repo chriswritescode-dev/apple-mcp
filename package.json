@@ -1,5 +1,5 @@
 {
-  "name": "apple-mcp",
+  "name": "@chriswritescode-dev/apple-mcp",
   "version": "0.3.0",
   "module": "index.ts",
   "type": "module",
@@ -8,7 +8,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dhravya/apple-mcp.git"
+    "url": "git+https://github.com/chriswritescode-dev/apple-mcp.git"
   },
   "keywords": [
     "mcp",

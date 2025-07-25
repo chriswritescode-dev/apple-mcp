@@ -1,49 +1,38 @@
-# Apple MCP tools
+# Apple MCP tools (Security Enhanced Fork)
 
-Love this MCP? Check out supermemory MCP too - https://mcp.supermemory.ai
+This is a security-enhanced fork of the original [apple-mcp](https://github.com/dhravya/apple-mcp) by Dhravya Shah. Check out the original project and supermemory MCP too - https://mcp.supermemory.ai
 
+This is a collection of apple-native tools for the [MCP protocol](https://modelcontextprotocol.com/docs/mcp-protocol) with added security features including input validation, rate limiting, and authentication.
 
-[![smithery badge](https://smithery.ai/badge/@Dhravya/apple-mcp)](https://smithery.ai/server/@Dhravya/apple-mcp)
-
-This is a collection of apple-native tools for the [MCP protocol](https://modelcontextprotocol.com/docs/mcp-protocol).
-
-Here's a step-by-step video about how to set this up, with a demo. - https://x.com/DhravyaShah/status/1892694077679763671
-
-<a href="https://glama.ai/mcp/servers/gq2qg6kxtu">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/gq2qg6kxtu/badge" alt="Apple Server MCP server" />
-</a>
-
-![image](https://github.com/user-attachments/assets/56a5ccfa-cb1a-4226-80c5-6cc794cefc34)
-
-
-<details>
-<summary>Here's the JSON to copy</summary>
-
-```
-{
-  "mcpServers": {
-    "apple-mcp": {
-      "command": "bunx",
-      "args": ["--no-cache", "apple-mcp@latest"]
-    }
-}
-
-```
-
-</details>
 
 #### Quick install
 
-To install Apple MCP for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@Dhravya/apple-mcp):
+To install this security-enhanced version of Apple MCP:
 
-```bash
-npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client claude
+For Claude Desktop, edit your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "apple-mcp": {
+      "command": "npx",
+      "args": ["-y", "@chriswritescode-dev/apple-mcp"]
+    }
+  }
+}
 ```
 
-... and for cursor, you can do:
+For Cursor, add to your MCP settings:
 
-```bash
-npx -y @smithery/cli@latest install @Dhravya/apple-mcp --client cursor
+```json
+{
+  "mcpServers": {
+    "apple-mcp": {
+      "command": "npx",
+      "args": ["-y", "@chriswritescode-dev/apple-mcp"]
+    }
+  }
+}
 ```
 
 
@@ -110,12 +99,12 @@ You just need bun, install with `brew install oven-sh/bun/bun`
 
 Now, edit your `claude_desktop_config.json` with this:
 
-```claude_desktop_config.json
+```json
 {
   "mcpServers": {
     "apple-mcp": {
       "command": "bunx",
-      "args": ["@dhravya/apple-mcp@latest"]
+      "args": ["@chriswritescode-dev/apple-mcp@latest"]
     }
   }
 }
@@ -191,7 +180,7 @@ For production environments, we strongly recommend enabling authentication:
 ## Local Development
 
 ```bash
-git clone https://github.com/dhravya/apple-mcp.git
+git clone https://github.com/chriswritescode-dev/apple-mcp.git
 cd apple-mcp
 bun install
 
